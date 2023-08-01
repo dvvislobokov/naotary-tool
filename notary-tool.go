@@ -16,6 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/golang-jwt/jwt/v5"
 	log "github.com/sirupsen/logrus"
+	"github.com/t-tomalak/logrus-easy-formatter"
 	"net/http"
 	"os"
 	"time"
@@ -59,7 +60,10 @@ type SubmissionStatusResponse struct {
 }
 
 func main() {
-
+	log.SetFormatter(&easy.Formatter{
+		TimestampFormat: "2006-01-02 15:04:05",
+		LogFormat:       " %time% [%lvl%] %msg%",
+	})
 	file := flag.String("f", "", "file to notarize")
 	key := flag.String("k", "", "private key")
 	kid := flag.String("kid", "", "kid for jwt (required)")
@@ -87,13 +91,15 @@ func main() {
 	}
 	fileName := fileStat.Name()
 	hash := sha256.New()
-	fileHash := fmt.Sprintf("%x", hash.Sum(nil))
 
 	fileData, err := os.ReadFile(*file)
 	if err != nil {
 		log.Fatal(err)
 	}
 	hash.Write(fileData)
+	fileHash := fmt.Sprintf("%x", hash.Sum(nil))
+
+	log.Infof("File to upload %s. File hash is %s\n", fileName, fileHash)
 
 	jwtKey, err := createJwtToken(*iss, *kid, *key)
 	if err != nil {
@@ -127,12 +133,12 @@ func main() {
 		}
 
 		if checkResp.Data.Attributes.Status == "Accepted" {
-			log.Info("file was accepted. Notarization successfull")
+			log.Info("file was accepted. Notarization successfully\n")
 			os.Exit(0)
 		}
 
 		if checkResp.Data.Attributes.Status == "In Progress" {
-			log.Infof("Notarization %s in progress", checkResp.Data.Id)
+			log.Infof("Notarization %s in progress\n", checkResp.Data.Id)
 			time.Sleep(*checkPeriod)
 			continue
 		} else {
