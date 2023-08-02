@@ -51,6 +51,9 @@ github.com/aws/aws-sdk-go/service/sso/ssoiface
 github.com/aws/aws-sdk-go/service/ssooidc
 github.com/aws/aws-sdk-go/service/sts
 github.com/aws/aws-sdk-go/service/sts/stsiface
+# github.com/dvvislobokov/notary-tool/notary v0.0.0-20230802012116-266bca3b9921
+## explicit; go 1.20
+github.com/dvvislobokov/notary-tool/notary
 # github.com/golang-jwt/jwt/v5 v5.0.0
 ## explicit; go 1.18
 github.com/golang-jwt/jwt/v5

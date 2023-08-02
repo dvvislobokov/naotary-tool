@@ -10,6 +10,7 @@ require (
 )
 
 require (
+	github.com/dvvislobokov/notary-tool/notary v0.0.0-20230802012116-266bca3b9921 // indirect
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
 	golang.org/x/sys v0.1.0 // indirect
 )
