@@ -16,6 +16,7 @@ func main() {
 		TimestampFormat: "2006-01-02 15:04:05",
 		LogFormat:       " %time% [%lvl%] %msg%",
 	})
+	log.SetLevel(log.InfoLevel)
 	file := flag.String("f", "", "file to notarize")
 	key := flag.String("k", "", "private key")
 	kid := flag.String("kid", "", "kid for jwt (required)")
@@ -55,6 +56,6 @@ func main() {
 	if err := notary.Notarize(*iss, *kid, *key, fileName, fileHash, fileData, *s3Timeout, *checkPeriod, false); err != nil {
 		log.Fatal(err)
 	}
-	log.Infof("File successfullty notarized")
+	log.Infof("File successfullty notarized\n")
 
 }

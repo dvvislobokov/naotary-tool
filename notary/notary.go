@@ -7,11 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/credentials"
-	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/schollz/progressbar/v3"
@@ -55,13 +52,15 @@ func (r *CustomReader) Seek(offset int64, whence int) (int64, error) {
 	return r.fp.Seek(offset, whence)
 }
 
+type Notification struct {
+	Channel string `json:"channel"`
+	Target  string `json:"target"`
+}
+
 type SubmissionRequest struct {
-	SubmissionName string `json:"submissionName"`
-	Sha256         string `json:"sha256"`
-	Notifications  []struct {
-		Channel string `json:"channel"`
-		Target  string `json:"target"`
-	} `json:"notifications"`
+	SubmissionName string         `json:"submissionName"`
+	Sha256         string         `json:"sha256"`
+	Notifications  []Notification `json:"notifications"`
 }
 
 type SubmissionResponse struct {
@@ -117,15 +116,12 @@ func CreateJwtToken(iss string, kid string, keyfile string) (string, error) {
 }
 
 func UploadFile(response *SubmissionResponse, fileData []byte, timeout time.Duration) error {
+	cfgBool := true
 	sess := session.Must(session.NewSession(&aws.Config{
-		Credentials: credentials.NewStaticCredentials(response.Data.Attributes.AwsAccessKeyId, response.Data.Attributes.AwsSecretAccessKey, response.Data.Attributes.AwsSessionToken),
+		S3UseAccelerate: &cfgBool,
+		Credentials:     credentials.NewStaticCredentials(response.Data.Attributes.AwsAccessKeyId, response.Data.Attributes.AwsSecretAccessKey, response.Data.Attributes.AwsSessionToken),
+		Region:          aws.String("us-west-2"),
 	}))
-
-	// Create a new instance of the service's client with a Session.
-	// Optional aws.Config values can also be provided as variadic arguments
-	// to the New function. This option allows you to provide service
-	// specific configuration.
-	svc := s3.New(sess)
 
 	// Create a context with a timeout that will abort the upload if it takes
 	// more than the passed in timeout.
@@ -141,23 +137,17 @@ func UploadFile(response *SubmissionResponse, fileData []byte, timeout time.Dura
 		defer cancelFn()
 	}
 
-	// Uploads the object to S3. The Context will interrupt the request if the
-	// timeout expires.
-	bytesReader := bytes.NewReader(fileData)
-	_, err := svc.PutObjectWithContext(ctx, &s3.PutObjectInput{
-		Bucket: aws.String(response.Data.Attributes.Bucket),
-		Key:    aws.String(response.Data.Attributes.Object),
-		Body:   bytesReader,
+	uploader := s3manager.NewUploader(sess, func(u *s3manager.Uploader) {
+		u.BufferProvider = s3manager.NewBufferedReadSeekerWriteToPool(1024 * 1024)
 	})
 
+	_, err := uploader.Upload(&s3manager.UploadInput{
+		Bucket: aws.String(response.Data.Attributes.Bucket),
+		Key:    aws.String(response.Data.Attributes.Object),
+		Body:   bytes.NewReader(fileData),
+	})
 	if err != nil {
-		if awserr, ok := err.(awserr.Error); ok && awserr.Code() == request.CanceledErrorCode {
-			// If the SDK can determine the request or retry delay was canceled
-			// by a context the CanceledErrorCode error code will be returned.
-			return errors.New(fmt.Sprintf("upload canceled due to timeout, %v\n", awserr))
-		} else {
-			return errors.New(fmt.Sprintf("failed to upload object, %v\n", err))
-		}
+		return err
 	}
 
 	return nil
@@ -205,7 +195,12 @@ func StartSubmission(subReq *SubmissionRequest, jwt *string) (*SubmissionRespons
 	} else {
 		reader := bytes.NewReader(data)
 		request, err := http.NewRequest(http.MethodPost, "https://appstoreconnect.apple.com/notary/v2/submissions", reader)
-		request.Header.Add("Authorization", "Bearer "+*jwt)
+		//request.Proto = "HTTP/2"
+		request.Header.Add("authorization", "Bearer "+*jwt)
+		request.Header.Add("accept", "*/*")
+		request.Header.Add("Host", "appstoreconnect.apple.com")
+		request.Header.Add("user-agent", "curl/7.88.1")
+		request.Header.Add("Content-Type", "application/json")
 		if err != nil {
 			return nil, err
 		}
@@ -213,8 +208,11 @@ func StartSubmission(subReq *SubmissionRequest, jwt *string) (*SubmissionRespons
 		if err != nil {
 			return nil, err
 		}
+		if resp.StatusCode > 300 {
+			return nil, errors.New("fail to execute submission request")
+		}
 		response := SubmissionResponse{}
-		err = json.NewDecoder(resp.Body).Decode(response)
+		err = json.NewDecoder(resp.Body).Decode(&response)
 		if err != nil {
 			return nil, err
 		}
@@ -233,7 +231,7 @@ func CheckSubmission(id string, jwt string) (*SubmissionStatusResponse, error) {
 		return nil, err
 	}
 	response := SubmissionStatusResponse{}
-	err = json.NewDecoder(resp.Body).Decode(response)
+	err = json.NewDecoder(resp.Body).Decode(&response)
 	if err != nil {
 		return nil, err
 	}
@@ -249,6 +247,7 @@ func Notarize(iss string, kid string, keyfile string, fileName string, fileHash 
 	resp, err := StartSubmission(&SubmissionRequest{
 		SubmissionName: fileName,
 		Sha256:         fileHash,
+		Notifications:  make([]Notification, 0),
 	}, &jwtKey)
 
 	if err != nil {
@@ -274,14 +273,12 @@ func Notarize(iss string, kid string, keyfile string, fileName string, fileHash 
 		if checkResp.Data.Attributes.Status == "Accepted" {
 			log.Info("file was accepted. Notarization successfully\n")
 			return nil
-		}
-
-		if checkResp.Data.Attributes.Status == "In Progress" {
+		} else if checkResp.Data.Attributes.Status == "In Progress" {
 			log.Infof("Notarization %s in progress\n", checkResp.Data.Id)
 			time.Sleep(checkPeriod)
 			continue
 		} else {
-			log.Info(checkResp)
+			log.Infof("Notarization %s failed\n", checkResp.Data.Id)
 			return nil
 		}
 
