@@ -240,7 +240,7 @@ func CheckSubmission(id string, jwt string) (*SubmissionStatusResponse, error) {
 	return &response, nil
 }
 
-func Notarize(iss string, kid string, keyfile string, fileName string, fileHash string, fileData []byte, s3Timeout time.Duration, checkPeriod time.Duration) error {
+func Notarize(iss string, kid string, keyfile string, fileName string, fileHash string, fileData []byte, s3Timeout time.Duration, checkPeriod time.Duration, showProgress bool) error {
 	jwtKey, err := CreateJwtToken(iss, kid, keyfile)
 	if err != nil {
 		return err

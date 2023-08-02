@@ -52,7 +52,7 @@ func main() {
 	fileHash := fmt.Sprintf("%x", hash.Sum(nil))
 
 	log.Infof("File to upload %s. File hash is %s\n", fileName, fileHash)
-	if err := notary.Notarize(*iss, *kid, *key, fileName, fileHash, fileData, *s3Timeout, *checkPeriod); err != nil {
+	if err := notary.Notarize(*iss, *kid, *key, fileName, fileHash, fileData, *s3Timeout, *checkPeriod, false); err != nil {
 		log.Fatal(err)
 	}
 	log.Infof("File successfullty notarized")
