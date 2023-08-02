@@ -12,12 +12,48 @@ import (
 	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/aws/aws-sdk-go/service/s3/s3manager"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/schollz/progressbar/v3"
 	log "github.com/sirupsen/logrus"
 	"net/http"
 	"os"
+	"sync/atomic"
 	"time"
 )
+
+type CustomReader struct {
+	fp   *os.File
+	size int64
+	read int64
+	pb   *progressbar.ProgressBar
+}
+
+func (r *CustomReader) Read(p []byte) (int, error) {
+	return r.fp.Read(p)
+}
+
+func (r *CustomReader) ReadAt(p []byte, off int64) (int, error) {
+	n, err := r.fp.ReadAt(p, off)
+	if err != nil {
+		return n, err
+	}
+
+	// Got the length have read( or means has uploaded), and you can construct your message
+	atomic.AddInt64(&r.read, int64(n))
+
+	// I have no idea why the read length need to be div 2,
+	// maybe the request read once when Sign and actually send call ReadAt again
+	// It works for me
+	_ = r.pb.Set64(r.read)
+	//log.Printf("total read:%d    progress:%d%%\n", r.read/2, int(float32(r.read*100/2)/float32(r.size)))
+
+	return n, err
+}
+
+func (r *CustomReader) Seek(offset int64, whence int) (int64, error) {
+	return r.fp.Seek(offset, whence)
+}
 
 type SubmissionRequest struct {
 	SubmissionName string `json:"submissionName"`
@@ -107,11 +143,13 @@ func UploadFile(response *SubmissionResponse, fileData []byte, timeout time.Dura
 
 	// Uploads the object to S3. The Context will interrupt the request if the
 	// timeout expires.
+	bytesReader := bytes.NewReader(fileData)
 	_, err := svc.PutObjectWithContext(ctx, &s3.PutObjectInput{
 		Bucket: aws.String(response.Data.Attributes.Bucket),
 		Key:    aws.String(response.Data.Attributes.Object),
-		Body:   bytes.NewReader(fileData),
+		Body:   bytesReader,
 	})
+
 	if err != nil {
 		if awserr, ok := err.(awserr.Error); ok && awserr.Code() == request.CanceledErrorCode {
 			// If the SDK can determine the request or retry delay was canceled
@@ -120,6 +158,42 @@ func UploadFile(response *SubmissionResponse, fileData []byte, timeout time.Dura
 		} else {
 			return errors.New(fmt.Sprintf("failed to upload object, %v\n", err))
 		}
+	}
+
+	return nil
+}
+
+func UploadFileWithProgress(response *SubmissionResponse, file *os.File, timeout time.Duration) error {
+	sess := session.Must(session.NewSession(&aws.Config{
+		Credentials: credentials.NewStaticCredentials(response.Data.Attributes.AwsAccessKeyId, response.Data.Attributes.AwsSecretAccessKey, response.Data.Attributes.AwsSessionToken),
+	}))
+
+	ctx := context.Background()
+	var cancelFn func()
+	if timeout < time.Minute {
+		timeout = time.Minute
+	}
+	ctx, cancelFn = context.WithTimeout(ctx, timeout)
+	if cancelFn != nil {
+		defer cancelFn()
+	}
+	fileStat, _ := file.Stat()
+	uploader := s3manager.NewUploader(sess)
+	bytesReader := &CustomReader{
+		fp:   file,
+		size: fileStat.Size(),
+		pb:   progressbar.DefaultBytes(fileStat.Size()),
+	}
+	_, err := uploader.Upload(&s3manager.UploadInput{
+		Bucket: &response.Data.Attributes.Bucket,
+		Key:    &response.Data.Attributes.Object,
+		Body:   bytesReader,
+	}, func(u *s3manager.Uploader) {
+		u.PartSize = 1024 * 1024
+	})
+
+	if err != nil {
+		return errors.New(fmt.Sprintf("failed to upload object, %v\n", err))
 	}
 
 	return nil
@@ -180,7 +254,6 @@ func Notarize(iss string, kid string, keyfile string, fileName string, fileHash 
 	if err != nil {
 		return err
 	}
-
 	err = UploadFile(resp, fileData, s3Timeout)
 	if err != nil {
 		return err
